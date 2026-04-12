@@ -7,7 +7,7 @@ Split AnnData into Parquet files (X/obs/var/layers/obsm/varm/obsp/varp) and rest
 From GitHub:
 
 ```bash
-pip install git+https://github.com/<USER>/<REPO>.git
+pip install pip install git+https://github.com/kh22cho/anndata-parquet-utils.git
 ```
 
 (Optional) Editable install for local development:
