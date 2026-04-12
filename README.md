@@ -28,7 +28,7 @@ out_dir = "/path/to/save_dir"
 to_parquet(adata, out_dir, prefix="group_")
 
 # Load
-adata2 = from_parquet(out_dir, prefix="group_", verbose=True)
+adata = from_parquet(out_dir, prefix="group_", verbose=True)
 ```
 
 ## Output layout (default)
