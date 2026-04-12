@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anndata-parquet-utils"
+version = "0.1.0"
+description = "Split AnnData to Parquet and restore it back."
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [{name = "khcho"}]
+
+# Core runtime dependencies
+# - pyarrow needed for parquet I/O
+# - anndata depends on numpy/scipy/pandas, but we list them explicitly
+#   to make the requirements clear for users.
+dependencies = [
+  "anndata>=0.9",
+  "numpy>=1.22",
+  "pandas>=1.5",
+  "scipy>=1.9",
+  "pyarrow>=10.0",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
