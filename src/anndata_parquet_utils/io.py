@@ -29,10 +29,8 @@ def _ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
 
-def _fname(dir_path: str, prefix: str, name: str) -> str:
-    if prefix:
-        return os.path.join(dir_path, f"{prefix}{name}")
-    return os.path.join(dir_path, name)
+def _fname(dir_path: str, prefix: str, name: str, suffix: str) -> str:
+    return os.path.join(dir_path, f"{prefix}{name}{suffix}")
 
 
 def _write_csr(X: sparse.csr_matrix, base_path: str) -> None:
@@ -67,72 +65,88 @@ def _read_matrix(base_path: str):
     return pd.read_parquet(base_path + ".parquet").to_numpy()
 
 
-def to_parquet(adata: ad.AnnData, out_dir: str, prefix: str = "") -> None:
+def to_parquet(
+    adata: ad.AnnData,
+    out_dir: str,
+    prefix: str = "",
+    suffix: str = "",
+    obs_cols=None,
+    var_cols=None,
+) -> None:
     """Save AnnData to a split parquet directory.
 
     prefix: optional string prepended to top-level file names (e.g. "group_").
+    suffix: optional string appended to top-level file names (e.g. "_v1").
+    obs_cols/var_cols: optional column lists to select before saving.
     """
     _ensure_dir(out_dir)
 
     # X
     if sparse.issparse(adata.X):
-        _write_csr(adata.X.tocsr(), _fname(out_dir, prefix, "X"))
+        _write_csr(adata.X.tocsr(), _fname(out_dir, prefix, "X", suffix))
     else:
-        pd.DataFrame(adata.X).to_parquet(_fname(out_dir, prefix, "X") + ".parquet")
+        pd.DataFrame(adata.X).to_parquet(
+            _fname(out_dir, prefix, "X", suffix) + ".parquet"
+        )
 
     # obs / var
-    adata.obs.to_parquet(_fname(out_dir, prefix, "obs") + ".parquet")
-    adata.var.to_parquet(_fname(out_dir, prefix, "var") + ".parquet")
+    obs_df = adata.obs if obs_cols is None else adata.obs.loc[:, obs_cols]
+    var_df = adata.var if var_cols is None else adata.var.loc[:, var_cols]
+    obs_df.to_parquet(_fname(out_dir, prefix, "obs", suffix) + ".parquet")
+    var_df.to_parquet(_fname(out_dir, prefix, "var", suffix) + ".parquet")
 
     # obsm / varm
     if len(adata.obsm):
-        obsm_dir = _fname(out_dir, prefix, "obsm")
+        obsm_dir = _fname(out_dir, prefix, "obsm", suffix)
         _ensure_dir(obsm_dir)
         for k, v in adata.obsm.items():
             pd.DataFrame(v).to_parquet(os.path.join(obsm_dir, f"{k}.parquet"))
 
     if len(adata.varm):
-        varm_dir = _fname(out_dir, prefix, "varm")
+        varm_dir = _fname(out_dir, prefix, "varm", suffix)
         _ensure_dir(varm_dir)
         for k, v in adata.varm.items():
             pd.DataFrame(v).to_parquet(os.path.join(varm_dir, f"{k}.parquet"))
 
     # obsp / varp
     if len(adata.obsp):
-        obsp_dir = _fname(out_dir, prefix, "obsp")
+        obsp_dir = _fname(out_dir, prefix, "obsp", suffix)
         _ensure_dir(obsp_dir)
         for k, v in adata.obsp.items():
             _write_matrix(v, os.path.join(obsp_dir, k))
 
     if len(adata.varp):
-        varp_dir = _fname(out_dir, prefix, "varp")
+        varp_dir = _fname(out_dir, prefix, "varp", suffix)
         _ensure_dir(varp_dir)
         for k, v in adata.varp.items():
             _write_matrix(v, os.path.join(varp_dir, k))
 
     # layers
     if len(adata.layers):
-        layers_dir = _fname(out_dir, prefix, "layers")
+        layers_dir = _fname(out_dir, prefix, "layers", suffix)
         _ensure_dir(layers_dir)
         for k, v in adata.layers.items():
             _write_matrix(v, os.path.join(layers_dir, k))
 
     # uns (best-effort)
     if len(adata.uns):
-        uns_path = _fname(out_dir, prefix, "uns.json")
+        uns_path = _fname(out_dir, prefix, "uns.json", suffix)
         with open(uns_path, "w", encoding="utf-8") as f:
             json.dump(adata.uns, f, ensure_ascii=True, default=str)
 
 
-def from_parquet(in_dir: str, prefix: str = "", verbose: bool = True) -> ad.AnnData:
+def from_parquet(
+    in_dir: str, prefix: str = "", suffix: str = "", verbose: bool = True
+) -> ad.AnnData:
     """Load AnnData from a split parquet directory.
 
     prefix: optional string prepended to top-level file names (e.g. "group_").
+    suffix: optional string appended to top-level file names (e.g. "_v1").
     """
     detected: Dict[str, str] = {}
 
     # X
-    x_base = _fname(in_dir, prefix, "X")
+    x_base = _fname(in_dir, prefix, "X", suffix)
     if os.path.exists(x_base + "_csr_data.parquet"):
         detected["X"] = x_base + "_csr_*.parquet"
         X = _read_csr(x_base)
@@ -140,8 +154,8 @@ def from_parquet(in_dir: str, prefix: str = "", verbose: bool = True) -> ad.AnnD
         detected["X"] = x_base + ".parquet"
         X = pd.read_parquet(x_base + ".parquet").to_numpy()
 
-    obs_path = _fname(in_dir, prefix, "obs") + ".parquet"
-    var_path = _fname(in_dir, prefix, "var") + ".parquet"
+    obs_path = _fname(in_dir, prefix, "obs", suffix) + ".parquet"
+    var_path = _fname(in_dir, prefix, "var", suffix) + ".parquet"
     detected["obs"] = obs_path
     detected["var"] = var_path
     obs = pd.read_parquet(obs_path)
@@ -150,7 +164,7 @@ def from_parquet(in_dir: str, prefix: str = "", verbose: bool = True) -> ad.AnnD
     adata = ad.AnnData(X=X, obs=obs, var=var)
 
     # obsm / varm
-    obsm_dir = _fname(in_dir, prefix, "obsm")
+    obsm_dir = _fname(in_dir, prefix, "obsm", suffix)
     if os.path.isdir(obsm_dir):
         for fn in os.listdir(obsm_dir):
             if fn.endswith(".parquet"):
@@ -158,7 +172,7 @@ def from_parquet(in_dir: str, prefix: str = "", verbose: bool = True) -> ad.AnnD
                 detected[f"obsm:{key}"] = os.path.join(obsm_dir, fn)
                 adata.obsm[key] = pd.read_parquet(os.path.join(obsm_dir, fn)).to_numpy()
 
-    varm_dir = _fname(in_dir, prefix, "varm")
+    varm_dir = _fname(in_dir, prefix, "varm", suffix)
     if os.path.isdir(varm_dir):
         for fn in os.listdir(varm_dir):
             if fn.endswith(".parquet"):
@@ -167,7 +181,7 @@ def from_parquet(in_dir: str, prefix: str = "", verbose: bool = True) -> ad.AnnD
                 adata.varm[key] = pd.read_parquet(os.path.join(varm_dir, fn)).to_numpy()
 
     # obsp / varp
-    obsp_dir = _fname(in_dir, prefix, "obsp")
+    obsp_dir = _fname(in_dir, prefix, "obsp", suffix)
     if os.path.isdir(obsp_dir):
         keys = {fn.split("_csr_")[0] for fn in os.listdir(obsp_dir) if "_csr_" in fn}
         for fn in os.listdir(obsp_dir):
@@ -179,7 +193,7 @@ def from_parquet(in_dir: str, prefix: str = "", verbose: bool = True) -> ad.AnnD
             detected[f"obsp:{key}"] = os.path.join(obsp_dir, f"{key}_csr_*.parquet")
             adata.obsp[key] = _read_csr(os.path.join(obsp_dir, key))
 
-    varp_dir = _fname(in_dir, prefix, "varp")
+    varp_dir = _fname(in_dir, prefix, "varp", suffix)
     if os.path.isdir(varp_dir):
         keys = {fn.split("_csr_")[0] for fn in os.listdir(varp_dir) if "_csr_" in fn}
         for fn in os.listdir(varp_dir):
@@ -192,7 +206,7 @@ def from_parquet(in_dir: str, prefix: str = "", verbose: bool = True) -> ad.AnnD
             adata.varp[key] = _read_csr(os.path.join(varp_dir, key))
 
     # layers
-    layers_dir = _fname(in_dir, prefix, "layers")
+    layers_dir = _fname(in_dir, prefix, "layers", suffix)
     if os.path.isdir(layers_dir):
         keys = {fn.split("_csr_")[0] for fn in os.listdir(layers_dir) if "_csr_" in fn}
         for fn in os.listdir(layers_dir):
@@ -205,7 +219,7 @@ def from_parquet(in_dir: str, prefix: str = "", verbose: bool = True) -> ad.AnnD
             adata.layers[key] = _read_csr(os.path.join(layers_dir, key))
 
     # uns (best-effort)
-    uns_path = _fname(in_dir, prefix, "uns.json")
+    uns_path = _fname(in_dir, prefix, "uns.json", suffix)
     if os.path.exists(uns_path):
         detected["uns"] = uns_path
         with open(uns_path, "r", encoding="utf-8") as f:
@@ -218,6 +232,6 @@ def from_parquet(in_dir: str, prefix: str = "", verbose: bool = True) -> ad.AnnD
     return adata
 
 
-def load_csr_only(in_dir: str, prefix: str = "") -> sparse.csr_matrix:
+def load_csr_only(in_dir: str, prefix: str = "", suffix: str = "") -> sparse.csr_matrix:
     """Convenience helper to load only X as CSR."""
-    return _read_csr(_fname(in_dir, prefix, "X"))
+    return _read_csr(_fname(in_dir, prefix, "X", suffix))
