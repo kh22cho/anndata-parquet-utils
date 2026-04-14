@@ -1,14 +1,14 @@
 """AnnData <-> Parquet split I/O utilities.
 
 Layout (prefix optional):
-- {prefix}X_csr_*.parquet
+- {prefix}X_csr.parquet
 - {prefix}obs.parquet
 - {prefix}var.parquet
 - {prefix}obsm/{key}.parquet
 - {prefix}varm/{key}.parquet
-- {prefix}obsp/{key}_csr_*.parquet (or .parquet if dense)
-- {prefix}varp/{key}_csr_*.parquet (or .parquet if dense)
-- {prefix}layers/{key}_csr_*.parquet (or .parquet if dense)
+- {prefix}obsp/{key}_csr.parquet (or .parquet if dense)
+- {prefix}varp/{key}_csr.parquet (or .parquet if dense)
+- {prefix}layers/{key}_csr.parquet (or .parquet if dense)
 - {prefix}uns.json (best-effort)
 """
 
@@ -34,15 +34,29 @@ def _fname(dir_path: str, prefix: str, name: str, suffix: str) -> str:
 
 
 def _write_csr(X: sparse.csr_matrix, base_path: str) -> None:
-    pd.DataFrame({"data": X.data}).to_parquet(base_path + "_csr_data.parquet")
-    pd.DataFrame({"indices": X.indices}).to_parquet(base_path + "_csr_indices.parquet")
-    pd.DataFrame({"indptr": X.indptr}).to_parquet(base_path + "_csr_indptr.parquet")
-    pd.DataFrame({"shape0": [X.shape[0]], "shape1": [X.shape[1]]}).to_parquet(
-        base_path + "_csr_shape.parquet"
+    df = pd.DataFrame(
+        {
+            "data": [X.data],
+            "indices": [X.indices],
+            "indptr": [X.indptr],
+            "shape0": [X.shape[0]],
+            "shape1": [X.shape[1]],
+        }
     )
+    df.to_parquet(base_path + "_csr.parquet")
 
 
 def _read_csr(base_path: str) -> sparse.csr_matrix:
+    csr_path = base_path + "_csr.parquet"
+    if os.path.exists(csr_path):
+        df = pd.read_parquet(csr_path)
+        data = np.asarray(df["data"].iloc[0])
+        indices = np.asarray(df["indices"].iloc[0])
+        indptr = np.asarray(df["indptr"].iloc[0])
+        shape = (int(df["shape0"].iloc[0]), int(df["shape1"].iloc[0]))
+        return sparse.csr_matrix((data, indices, indptr), shape=shape)
+
+    # Legacy split files
     data = pd.read_parquet(base_path + "_csr_data.parquet")["data"].to_numpy()
     indices = pd.read_parquet(base_path + "_csr_indices.parquet")["indices"].to_numpy()
     indptr = pd.read_parquet(base_path + "_csr_indptr.parquet")["indptr"].to_numpy()
@@ -59,10 +73,21 @@ def _write_matrix(value, base_path: str) -> None:
 
 
 def _read_matrix(base_path: str):
-    csr_path = base_path + "_csr_data.parquet"
+    csr_path = base_path + "_csr.parquet"
     if os.path.exists(csr_path):
         return _read_csr(base_path)
+    if os.path.exists(base_path + "_csr_data.parquet"):
+        return _read_csr(base_path)
     return pd.read_parquet(base_path + ".parquet").to_numpy()
+
+
+def _select_keys(container, keys, label: str):
+    if keys is None:
+        return list(container.keys())
+    missing = [k for k in keys if k not in container]
+    if missing:
+        raise KeyError(f"Missing {label} keys: {missing}")
+    return list(keys)
 
 
 def to_parquet(
@@ -72,12 +97,16 @@ def to_parquet(
     suffix: str = "",
     obs_cols=None,
     var_cols=None,
+    layers_keys=None,
+    obsm_keys=None,
+    varm_keys=None,
 ) -> None:
     """Save AnnData to a split parquet directory.
 
     prefix: optional string prepended to top-level file names (e.g. "group_").
     suffix: optional string appended to top-level file names (e.g. "_v1").
     obs_cols/var_cols: optional column lists to select before saving.
+    layers_keys/obsm_keys/varm_keys: optional key lists to select before saving.
     """
     _ensure_dir(out_dir)
 
@@ -99,14 +128,14 @@ def to_parquet(
     if len(adata.obsm):
         obsm_dir = _fname(out_dir, prefix, "obsm", suffix)
         _ensure_dir(obsm_dir)
-        for k, v in adata.obsm.items():
-            pd.DataFrame(v).to_parquet(os.path.join(obsm_dir, f"{k}.parquet"))
+        for k in _select_keys(adata.obsm, obsm_keys, "obsm"):
+            pd.DataFrame(adata.obsm[k]).to_parquet(os.path.join(obsm_dir, f"{k}.parquet"))
 
     if len(adata.varm):
         varm_dir = _fname(out_dir, prefix, "varm", suffix)
         _ensure_dir(varm_dir)
-        for k, v in adata.varm.items():
-            pd.DataFrame(v).to_parquet(os.path.join(varm_dir, f"{k}.parquet"))
+        for k in _select_keys(adata.varm, varm_keys, "varm"):
+            pd.DataFrame(adata.varm[k]).to_parquet(os.path.join(varm_dir, f"{k}.parquet"))
 
     # obsp / varp
     if len(adata.obsp):
@@ -125,8 +154,8 @@ def to_parquet(
     if len(adata.layers):
         layers_dir = _fname(out_dir, prefix, "layers", suffix)
         _ensure_dir(layers_dir)
-        for k, v in adata.layers.items():
-            _write_matrix(v, os.path.join(layers_dir, k))
+        for k in _select_keys(adata.layers, layers_keys, "layers"):
+            _write_matrix(adata.layers[k], os.path.join(layers_dir, k))
 
     # uns (best-effort)
     if len(adata.uns):
@@ -147,8 +176,11 @@ def from_parquet(
 
     # X
     x_base = _fname(in_dir, prefix, "X", suffix)
-    if os.path.exists(x_base + "_csr_data.parquet"):
-        detected["X"] = x_base + "_csr_*.parquet"
+    if os.path.exists(x_base + "_csr.parquet"):
+        detected["X"] = x_base + "_csr.parquet"
+        X = _read_csr(x_base)
+    elif os.path.exists(x_base + "_csr_data.parquet"):
+        detected["X"] = x_base + "_csr_*.parquet (legacy)"
         X = _read_csr(x_base)
     else:
         detected["X"] = x_base + ".parquet"
@@ -183,39 +215,63 @@ def from_parquet(
     # obsp / varp
     obsp_dir = _fname(in_dir, prefix, "obsp", suffix)
     if os.path.isdir(obsp_dir):
-        keys = {fn.split("_csr_")[0] for fn in os.listdir(obsp_dir) if "_csr_" in fn}
+        keys = set()
         for fn in os.listdir(obsp_dir):
-            if fn.endswith(".parquet") and "_csr_" not in fn:
+            if fn.endswith("_csr.parquet"):
+                keys.add(fn[: -len("_csr.parquet")])
+            elif "_csr_" in fn:
+                keys.add(fn.split("_csr_")[0])
+        for fn in os.listdir(obsp_dir):
+            if fn.endswith(".parquet") and "_csr_" not in fn and not fn.endswith("_csr.parquet"):
                 key = fn[:-8]
                 detected[f"obsp:{key}"] = os.path.join(obsp_dir, fn)
                 adata.obsp[key] = pd.read_parquet(os.path.join(obsp_dir, fn)).to_numpy()
         for key in keys:
-            detected[f"obsp:{key}"] = os.path.join(obsp_dir, f"{key}_csr_*.parquet")
+            if os.path.exists(os.path.join(obsp_dir, f"{key}_csr.parquet")):
+                detected[f"obsp:{key}"] = os.path.join(obsp_dir, f"{key}_csr.parquet")
+            else:
+                detected[f"obsp:{key}"] = os.path.join(obsp_dir, f"{key}_csr_*.parquet (legacy)")
             adata.obsp[key] = _read_csr(os.path.join(obsp_dir, key))
 
     varp_dir = _fname(in_dir, prefix, "varp", suffix)
     if os.path.isdir(varp_dir):
-        keys = {fn.split("_csr_")[0] for fn in os.listdir(varp_dir) if "_csr_" in fn}
+        keys = set()
         for fn in os.listdir(varp_dir):
-            if fn.endswith(".parquet") and "_csr_" not in fn:
+            if fn.endswith("_csr.parquet"):
+                keys.add(fn[: -len("_csr.parquet")])
+            elif "_csr_" in fn:
+                keys.add(fn.split("_csr_")[0])
+        for fn in os.listdir(varp_dir):
+            if fn.endswith(".parquet") and "_csr_" not in fn and not fn.endswith("_csr.parquet"):
                 key = fn[:-8]
                 detected[f"varp:{key}"] = os.path.join(varp_dir, fn)
                 adata.varp[key] = pd.read_parquet(os.path.join(varp_dir, fn)).to_numpy()
         for key in keys:
-            detected[f"varp:{key}"] = os.path.join(varp_dir, f"{key}_csr_*.parquet")
+            if os.path.exists(os.path.join(varp_dir, f"{key}_csr.parquet")):
+                detected[f"varp:{key}"] = os.path.join(varp_dir, f"{key}_csr.parquet")
+            else:
+                detected[f"varp:{key}"] = os.path.join(varp_dir, f"{key}_csr_*.parquet (legacy)")
             adata.varp[key] = _read_csr(os.path.join(varp_dir, key))
 
     # layers
     layers_dir = _fname(in_dir, prefix, "layers", suffix)
     if os.path.isdir(layers_dir):
-        keys = {fn.split("_csr_")[0] for fn in os.listdir(layers_dir) if "_csr_" in fn}
+        keys = set()
         for fn in os.listdir(layers_dir):
-            if fn.endswith(".parquet") and "_csr_" not in fn:
+            if fn.endswith("_csr.parquet"):
+                keys.add(fn[: -len("_csr.parquet")])
+            elif "_csr_" in fn:
+                keys.add(fn.split("_csr_")[0])
+        for fn in os.listdir(layers_dir):
+            if fn.endswith(".parquet") and "_csr_" not in fn and not fn.endswith("_csr.parquet"):
                 key = fn[:-8]
                 detected[f"layers:{key}"] = os.path.join(layers_dir, fn)
                 adata.layers[key] = pd.read_parquet(os.path.join(layers_dir, fn)).to_numpy()
         for key in keys:
-            detected[f"layers:{key}"] = os.path.join(layers_dir, f"{key}_csr_*.parquet")
+            if os.path.exists(os.path.join(layers_dir, f"{key}_csr.parquet")):
+                detected[f"layers:{key}"] = os.path.join(layers_dir, f"{key}_csr.parquet")
+            else:
+                detected[f"layers:{key}"] = os.path.join(layers_dir, f"{key}_csr_*.parquet (legacy)")
             adata.layers[key] = _read_csr(os.path.join(layers_dir, key))
 
     # uns (best-effort)

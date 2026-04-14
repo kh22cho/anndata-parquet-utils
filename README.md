@@ -33,6 +33,9 @@ to_parquet(
     suffix="_v1",      # optional; appended to top-level file names
     obs_cols=["colA", "colB"],  # optional; save selected obs columns only
     var_cols=["colC", "colD"],  # optional; save selected var columns only
+    layers_keys=["counts", "log1p"],  # optional; save selected layers only
+    obsm_keys=["pca", "umap"],        # optional; save selected obsm only
+    varm_keys=["pca_loadings"],       # optional; save selected varm only
 )
 
 # Load
@@ -49,21 +52,22 @@ adata = from_parquet(
 ## Output layout (default)
 
 ```
-{prefix}X{suffix}_csr_*.parquet
+{prefix}X{suffix}_csr.parquet
 {prefix}obs{suffix}.parquet
 {prefix}var{suffix}.parquet
 {prefix}obsm{suffix}/{key}.parquet
 {prefix}varm{suffix}/{key}.parquet
-{prefix}obsp{suffix}/{key}_csr_*.parquet (or .parquet if dense)
-{prefix}varp{suffix}/{key}_csr_*.parquet (or .parquet if dense)
-{prefix}layers{suffix}/{key}_csr_*.parquet (or .parquet if dense)
+{prefix}obsp{suffix}/{key}_csr.parquet (or .parquet if dense)
+{prefix}varp{suffix}/{key}_csr.parquet (or .parquet if dense)
+{prefix}layers{suffix}/{key}_csr.parquet (or .parquet if dense)
 {prefix}uns.json{suffix} (best-effort)
 ```
 
 ## Notes
 
-- Sparse matrices are stored as CSR components: data/indices/indptr/shape.
+- Sparse matrices are stored as a single CSR parquet with data/indices/indptr/shape.
 - `obs_cols` / `var_cols` can be passed to save only selected columns.
+- `layers_keys` / `obsm_keys` / `varm_keys` can be passed to save only selected parts.
 - `uns` is saved to JSON with best-effort serialization.
 - Parquet I/O requires `pyarrow`.
 
