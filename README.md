@@ -23,12 +23,27 @@ import anndata as ad
 from anndata_parquet_utils import to_parquet, from_parquet
 
 # Save
-# prefix/suffix are optional; they are prepended/appended to top-level file names
+# - prefix/suffix: optional (default: "")
+# - obs_cols/var_cols: optional (default: all columns)
 out_dir = "/path/to/save_dir"
-to_parquet(adata, out_dir, prefix="group_", suffix="_v1")
+to_parquet(
+    adata,
+    out_dir,
+    prefix="group_",   # optional; prepended to top-level file names
+    suffix="_v1",      # optional; appended to top-level file names
+    obs_cols=["colA", "colB"],  # optional; save selected obs columns only
+    var_cols=["colC", "colD"],  # optional; save selected var columns only
+)
 
 # Load
-adata = from_parquet(out_dir, prefix="group_", suffix="_v1", verbose=True)
+# - prefix/suffix: optional (default: "")
+# - verbose: optional (default: True) prints detected files
+adata = from_parquet(
+    out_dir,
+    prefix="group_",
+    suffix="_v1",
+    verbose=True,
+)
 ```
 
 ## Output layout (default)
