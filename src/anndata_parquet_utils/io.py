@@ -24,6 +24,8 @@ from typing import Dict
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 from scipy import sparse
 
 import anndata as ad
@@ -37,40 +39,60 @@ def _fname(dir_path: str, prefix: str, name: str, suffix: str) -> str:
     return os.path.join(dir_path, f"{prefix}{name}{suffix}")
 
 
+def _pq_write_table(table: pa.Table, path: str, compression: str | None) -> None:
+    # pyarrow default compression is typically snappy; avoid overriding it when None.
+    if compression is None:
+        pq.write_table(table, path)
+    else:
+        pq.write_table(table, path, compression=compression)
+
+
 def _write_csr_all(
     X: sparse.csr_matrix, base_path: str, compression: str | None = None
 ) -> None:
-    pd.DataFrame({"data": X.data}).to_parquet(
-        base_path + "_csr_data.parquet", compression=compression
+    _pq_write_table(
+        pa.table({"data": pa.array(X.data)}),
+        base_path + "_csr_data.parquet",
+        compression=compression,
     )
-    pd.DataFrame({"indices": X.indices}).to_parquet(
-        base_path + "_csr_indices.parquet", compression=compression
+    _pq_write_table(
+        pa.table({"indices": pa.array(X.indices)}),
+        base_path + "_csr_indices.parquet",
+        compression=compression,
     )
-    pd.DataFrame({"indptr": X.indptr}).to_parquet(
-        base_path + "_csr_indptr.parquet", compression=compression
+    _pq_write_table(
+        pa.table({"indptr": pa.array(X.indptr)}),
+        base_path + "_csr_indptr.parquet",
+        compression=compression,
     )
-    pd.DataFrame({"shape0": [X.shape[0]], "shape1": [X.shape[1]]}).to_parquet(
-        base_path + "_csr_shape.parquet", compression=compression
+    _pq_write_table(
+        pa.table({"shape0": [X.shape[0]], "shape1": [X.shape[1]]}),
+        base_path + "_csr_shape.parquet",
+        compression=compression,
     )
 
 
 def _write_csr_two(
     X: sparse.csr_matrix, base_path: str, compression: str | None = None
 ) -> None:
-    df_data = pd.DataFrame({"data": X.data, "indices": X.indices})
-    df_data.to_parquet(
-        base_path + "_csr_data_indices.parquet", compression=compression
+    _pq_write_table(
+        pa.table({"data": pa.array(X.data), "indices": pa.array(X.indices)}),
+        base_path + "_csr_data_indices.parquet",
+        compression=compression,
     )
 
-    df_indptr = pd.DataFrame(
+    indptr_tbl = pa.table({"indptr": pa.array(X.indptr)})
+    indptr_tbl = indptr_tbl.replace_schema_metadata(
         {
-            "indptr": X.indptr,
-            "shape0": np.repeat(X.shape[0], X.indptr.shape[0]),
-            "shape1": np.repeat(X.shape[1], X.indptr.shape[0]),
+            b"format": b"csr",
+            b"shape0": str(X.shape[0]).encode("ascii"),
+            b"shape1": str(X.shape[1]).encode("ascii"),
         }
     )
-    df_indptr.to_parquet(
-        base_path + "_csr_indptr_shape.parquet", compression=compression
+    _pq_write_table(
+        indptr_tbl,
+        base_path + "_csr_indptr_shape.parquet",
+        compression=compression,
     )
 
 
@@ -78,13 +100,25 @@ def _read_csr(base_path: str) -> sparse.csr_matrix:
     data_path = base_path + "_csr_data_indices.parquet"
     indptr_path = base_path + "_csr_indptr_shape.parquet"
     if os.path.exists(data_path) and os.path.exists(indptr_path):
-        df_data = pd.read_parquet(data_path)
-        df_indptr = pd.read_parquet(indptr_path)
-        data = df_data["data"].to_numpy()
-        indices = df_data["indices"].to_numpy()
-        indptr = df_indptr["indptr"].to_numpy()
-        shape = (int(df_indptr["shape0"].iloc[0]), int(df_indptr["shape1"].iloc[0]))
-        return sparse.csr_matrix((data, indices, indptr), shape=shape)
+        t_data = pq.read_table(data_path)
+        t_indptr = pq.read_table(indptr_path)
+
+        # Avoid an extra combine_chunks() copy; ChunkedArray.to_numpy() concatenates as needed.
+        data = t_data.column("data").to_numpy(zero_copy_only=False)
+        indices = t_data.column("indices").to_numpy(zero_copy_only=False)
+        indptr = t_indptr.column("indptr").to_numpy(zero_copy_only=False)
+
+        md = t_indptr.schema.metadata or {}
+        if b"shape0" in md and b"shape1" in md:
+            shape0 = int(md[b"shape0"].decode("ascii"))
+            shape1 = int(md[b"shape1"].decode("ascii"))
+        elif "shape0" in t_indptr.column_names and "shape1" in t_indptr.column_names:
+            shape0 = int(t_indptr.column("shape0")[0].as_py())
+            shape1 = int(t_indptr.column("shape1")[0].as_py())
+        else:
+            raise ValueError(f"Missing shape metadata for {indptr_path}")
+
+        return sparse.csr_matrix((data, indices, indptr), shape=(shape0, shape1))
 
     # Legacy single-file CSR
     csr_path = base_path + "_csr.parquet"
@@ -119,7 +153,8 @@ def _write_matrix(
         else:
             raise ValueError("x_split must be 'all' or 'two'")
     else:
-        pd.DataFrame(value).to_parquet(base_path + ".parquet", compression=compression)
+        table = pa.Table.from_pandas(pd.DataFrame(value), preserve_index=False)
+        _pq_write_table(table, base_path + ".parquet", compression=compression)
 
 
 def _read_matrix(base_path: str):
@@ -182,18 +217,23 @@ def to_parquet(
         else:
             raise ValueError("x_split must be 'all' or 'two'")
     else:
-        pd.DataFrame(adata.X).to_parquet(
-            _fname(out_dir, prefix, "X", suffix) + ".parquet", compression=compression
+        table = pa.Table.from_pandas(pd.DataFrame(adata.X), preserve_index=False)
+        _pq_write_table(
+            table, _fname(out_dir, prefix, "X", suffix) + ".parquet", compression=compression
         )
 
     # obs / var
     obs_df = adata.obs if obs_cols is None else adata.obs.loc[:, obs_cols]
     var_df = adata.var if var_cols is None else adata.var.loc[:, var_cols]
-    obs_df.to_parquet(
-        _fname(out_dir, prefix, "obs", suffix) + ".parquet", compression=compression
+    _pq_write_table(
+        pa.Table.from_pandas(obs_df, preserve_index=True),
+        _fname(out_dir, prefix, "obs", suffix) + ".parquet",
+        compression=compression,
     )
-    var_df.to_parquet(
-        _fname(out_dir, prefix, "var", suffix) + ".parquet", compression=compression
+    _pq_write_table(
+        pa.Table.from_pandas(var_df, preserve_index=True),
+        _fname(out_dir, prefix, "var", suffix) + ".parquet",
+        compression=compression,
     )
 
     # obsm / varm
@@ -201,16 +241,18 @@ def to_parquet(
         obsm_dir = _fname(out_dir, prefix, "obsm", suffix)
         _ensure_dir(obsm_dir)
         for k in _select_keys(adata.obsm, obsm_keys, "obsm"):
-            pd.DataFrame(adata.obsm[k]).to_parquet(
-                os.path.join(obsm_dir, f"{k}.parquet"), compression=compression
+            table = pa.Table.from_pandas(pd.DataFrame(adata.obsm[k]), preserve_index=False)
+            _pq_write_table(
+                table, os.path.join(obsm_dir, f"{k}.parquet"), compression=compression
             )
 
     if len(adata.varm):
         varm_dir = _fname(out_dir, prefix, "varm", suffix)
         _ensure_dir(varm_dir)
         for k in _select_keys(adata.varm, varm_keys, "varm"):
-            pd.DataFrame(adata.varm[k]).to_parquet(
-                os.path.join(varm_dir, f"{k}.parquet"), compression=compression
+            table = pa.Table.from_pandas(pd.DataFrame(adata.varm[k]), preserve_index=False)
+            _pq_write_table(
+                table, os.path.join(varm_dir, f"{k}.parquet"), compression=compression
             )
 
     # obsp / varp
