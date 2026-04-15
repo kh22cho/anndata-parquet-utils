@@ -27,7 +27,7 @@ from anndata_parquet_utils import to_parquet, from_parquet
 # Save
 # - prefix/suffix: optional (default: "")
 # - obs_cols/var_cols: optional (default: all columns)
-# - compression: optional (default: engine default, usually snappy)
+# - compression: optional (default: pyarrow default; often snappy, but depends on your pyarrow build/version)
 # - x_split: optional (default: "two") - "two" or "all"
 out_dir = "/path/to/save_dir"
 to_parquet(
@@ -75,8 +75,10 @@ adata = from_parquet(
 
 ## Notes
 
-- Sparse matrices are stored as two CSR parquets by default (x_split=\"two\").
-- Use x_split=\"all\" to store data/indices/indptr/shape separately.
+- Sparse matrices are stored as CSR.
+- By default (x_split=\"two\"), CSR is stored as two Parquet files: data+indices and indptr+shape.
+  - For x_split=\"two\", shape is stored in Parquet metadata for the indptr file.
+  - Use x_split=\"all\" to store data/indices/indptr/shape separately (4 files).
 - `obs_cols` / `var_cols` can be passed to save only selected columns.
 - `layers_keys` / `obsm_keys` / `varm_keys` can be passed to save only selected parts.
 - `uns` is saved to JSON with best-effort serialization.
